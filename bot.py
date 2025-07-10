@@ -1,61 +1,119 @@
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes,
+    ConversationHandler, filters
+)
+import os
 
-TOKEN = "8080496078:AAES4ghFOnxUwBLZJvCicyx-0LtSyJmlOQg"
+TOKEN = os.environ.get("TOKEN")
 
-CHOOSING, SUREBET, LAY = range(3)
+# Estados da conversa
+ESCOLHER_ENTRADAS, RECEBER_ODDS, RECEBER_STAKE = range(3)
+
+# Dados temporários
+user_data_dict = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [["Calcular Surebet", "Calcular Lay"]]
     await update.message.reply_text(
-        "Fala, fenômeno! O que você quer calcular hoje?",
-        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True),
+        "🟩 *FULL GREEN | CALCULADORA SUREBET*\n\n"
+        "Quantas entradas (resultados diferentes) tem sua surebet?\n\n"
+        "Responda com um número de 2 a 5.",
+        parse_mode='Markdown'
     )
-    return CHOOSING
+    return ESCOLHER_ENTRADAS
 
-async def choosing(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    choice = update.message.text
-    if "Surebet" in choice:
-        await update.message.reply_text("Manda as odds das duas casas separadas por espaço (ex: 2.10 1.95)")
-        return SUREBET
-    if "Lay" in choice:
-        await update.message.reply_text("Manda a odd back, odd lay e o stake separados por espaço (ex: 2.20 2.12 100)")
-        return LAY
-    await update.message.reply_text("Opção inválida.")
-    return CHOOSING
+async def escolher_entradas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message.text.strip()
+    if not msg.isdigit() or int(msg) < 2 or int(msg) > 5:
+        await update.message.reply_text("Por favor, escolha um número entre 2 e 5.")
+        return ESCOLHER_ENTRADAS
+    entradas = int(msg)
+    context.user_data['entradas'] = entradas
+    await update.message.reply_text(
+        f"Ótimo! Agora envie as odds das {entradas} entradas, separadas por espaço.\n"
+        "Exemplo: 2.10 3.25 7.00"
+    )
+    return RECEBER_ODDS
 
-async def calc_surebet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def receber_odds(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    odds_text = update.message.text.strip().replace(",", ".")
+    odds = odds_text.split()
+    entradas = context.user_data['entradas']
+    if len(odds) != entradas:
+        await update.message.reply_text(f"Você precisa informar {entradas} odds. Tente novamente.")
+        return RECEBER_ODDS
     try:
-        odd1, odd2 = map(float, update.message.text.strip().split())
-        inv1 = 1/odd1
-        inv2 = 1/odd2
-        surebet = (inv1 + inv2) * 100
-        lucro = 100 - surebet
-        await update.message.reply_text(f"Surebet: {surebet:.2f}%\nLucro garantido: {lucro:.2f}% sobre o investimento.")
-    except:
-        await update.message.reply_text("Envia no formato: 2.10 1.95")
-    return ConversationHandler.END
+        odds = [float(o) for o in odds]
+    except ValueError:
+        await update.message.reply_text("Digite apenas números válidos para as odds.")
+        return RECEBER_ODDS
+    context.user_data['odds'] = odds
+    await update.message.reply_text(
+        f"Agora, informe o valor da aposta (stake) da primeira entrada. Exemplo: 100"
+    )
+    return RECEBER_STAKE
 
-async def calc_lay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def receber_stake(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    stake_text = update.message.text.strip().replace(",", ".")
     try:
-        odd_back, odd_lay, stake = map(float, update.message.text.strip().split())
-        lay_stake = (odd_back * stake) / (odd_lay - 0.05)
-        await update.message.reply_text(f"Valor a apostar no Lay: R$ {lay_stake:.2f}")
-    except:
-        await update.message.reply_text("Envia no formato: 2.20 2.12 100")
+        stake1 = float(stake_text)
+    except ValueError:
+        await update.message.reply_text("Digite um valor numérico válido para o stake.")
+        return RECEBER_STAKE
+
+    odds = context.user_data['odds']
+    entradas = context.user_data['entradas']
+
+    # Calcula stakes para todas entradas
+    investido = stake1
+    stakes = [stake1]
+    for i in range(1, entradas):
+        stake_i = (stake1 * odds[0]) / odds[i]
+        stakes.append(stake_i)
+        investido += stake_i
+
+    # Calcula lucro garantido para cada cenário
+    lucros = [stake1 * odds[0] - investido]
+    for i in range(1, entradas):
+        lucros.append(stakes[i] * odds[i] - investido)
+    lucro_min = min(lucros)
+
+    # Monta tabela visual
+    tabela = (
+        "🟩 *FULL GREEN | CÁLCULO SUREBET*\n\n"
+        "| # | Odd     | Aposta        | Lucro Garantido |\n"
+        "|---|---------|---------------|-----------------|\n"
+    )
+    for i in range(entradas):
+        tabela += f"| {i+1} | {odds[i]:.2f}   | R$ {stakes[i]:.2f}      | R$ {lucros[i]:.2f} |\n"
+    tabela += (
+        "|---|---------|---------------|-----------------|\n"
+        f"*Aposta total:* R$ {investido:.2f}\n"
+        f"✅ *Lucro garantido:* R$ {lucro_min:.2f} ({lucro_min/investido*100:.2f}%)"
+    )
+
+    await update.message.reply_text(
+        tabela,
+        parse_mode='Markdown'
+    )
+    await update.message.reply_text(
+        "🟢 E lembre-se sempre: sorte é para quem não tem método! 🧠"
+    )
     return ConversationHandler.END
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
+
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            CHOOSING: [MessageHandler(filters.TEXT & ~filters.COMMAND, choosing)],
-            SUREBET: [MessageHandler(filters.TEXT & ~filters.COMMAND, calc_surebet)],
-            LAY: [MessageHandler(filters.TEXT & ~filters.COMMAND, calc_lay)],
+            ESCOLHER_ENTRADAS: [MessageHandler(filters.TEXT & ~filters.COMMAND, escolher_entradas)],
+            RECEBER_ODDS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receber_odds)],
+            RECEBER_STAKE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receber_stake)],
         },
         fallbacks=[CommandHandler("start", start)],
     )
+
     app.add_handler(conv_handler)
     app.run_polling()
 
